@@ -2,7 +2,7 @@ pandas
 numpy
 requests
 yfinance
-FinanceDataReader
+finance-datareader
 beautifulsoup4
 openpyxl
 scikit-learn
