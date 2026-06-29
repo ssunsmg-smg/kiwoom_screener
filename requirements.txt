@@ -1,0 +1,9 @@
+pandas
+numpy
+requests
+yfinance
+FinanceDataReader
+beautifulsoup4
+openpyxl
+scikit-learn
+tqdm
