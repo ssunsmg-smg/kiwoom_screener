@@ -1,6 +1,9 @@
 name: 퀀트 자동매매 (장중 키움 REST API 주문 전용)
-
 on:
+  schedule:
+    - cron: '*/15 0-6 * * 1-5'   # 한국시간 09:00~15:59, 평일, 15분 간격
+ # workflow_dispatch:
+#on:
   # ── 스케줄(cron) 트리거 없음 — quant_trade.yml(KIS)과 동일한 정책 ──
   # GitHub Actions의 schedule 트리거는 정시 실행을 보장하지 않아서,
   # 외부 cron 서비스(cron-job.org)가 GitHub API로 이 워크플로를 직접 트리거합니다.
