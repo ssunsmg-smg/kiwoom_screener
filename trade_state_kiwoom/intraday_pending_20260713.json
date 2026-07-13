@@ -3,9 +3,9 @@
   "candidates": {
     "005850": {
       "status": "pending",
-      "tries": 20,
+      "tries": 21,
       "first_seen": "20260713",
-      "last_check": "04:31:04",
+      "last_check": "04:45:46",
       "last_detail": {
         "close": 54200.0,
         "vwap": 57014.73577935778,
