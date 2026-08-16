@@ -2,6 +2,13 @@ name: 퀀트 자동매매 (장중 키움 REST API 주문 전용)
 on:
   schedule:
     - cron: '*/15 0-6 * * 1-5'   # 한국시간 09:00~15:59, 평일, 15분 간격
+  # ⚠ [v2 확인사항] GitHub의 */15 스케줄은 대량 드랍됨이 실측으로 확인됨
+  #   (설정상 하루 28회여야 하는데 실제 실행은 3~4회, 간격 2시간+).
+  #   아래 주석의 cron-job.org 계획이 실제로는 동작하지 않고 있었음
+  #   (실행 이력이 전부 "Scheduled"로 찍힘 = 외부 트리거 미작동).
+  #   → cron-job.org 계정에서 이 워크플로 트리거를 재등록/활성화하고,
+  #     quant_daily.yml 쪽 트리거(7/29 이후 정지)도 함께 확인할 것.
+  #   외부 트리거가 복구되면 위 schedule은 백업으로 남겨두면 됨.
  # workflow_dispatch:
 #on:
   # ── 스케줄(cron) 트리거 없음 — quant_trade.yml(KIS)과 동일한 정책 ──
@@ -17,9 +24,14 @@ on:
 
   # ── 수동 실행 버튼 (테스트/비상용) ──
   workflow_dispatch:
+    inputs:
+      exit_dry_run:
+        description: '청산 dry-run (true면 매도주문 없이 판정만 출력)'
+        required: false
+        default: 'false'
 
 permissions:
-  contents: write   # 거래상태(kiwoom_positions/kiwoom_reinvest_pool/intraday_pending)를 레포에 커밋하기 위해 필요
+  contents: write   # 거래상태(kiwoom_positions/kiwoom_reinvest_pool/intraday_pending/exit_state)를 레포에 커밋하기 위해 필요
 
 jobs:
   kiwoom-trade:
@@ -46,29 +58,38 @@ jobs:
 
       # ④ signals/ 폴더의 가장 최근 매매신호 JSON을 작업 루트로 복사
       #    (quant_signal_check.py는 --output-dir 안의 매매신호_KR_*.json을 찾으므로)
+      #    [v2] 신호 파일이 없어도 "청산은" 돌아야 하므로 exit 1 제거 —
+      #         매수 단계만 스킵되고 보유종목 청산 체크는 항상 실행된다.
+      #    [v2] 신호 파일이 5거래일 이상 묵으면 매수를 건너뛰게 경고 플래그 생성
+      #         (7/29 신호로 8/14에 매수한 사고 재발 방지)
       - name: 매매신호 JSON 준비
+        id: signals
         run: |
           if [ -z "$(ls -A signals/*.json 2>/dev/null)" ]; then
-            echo "❌ signals/ 폴더에 매매신호 JSON이 없습니다."
-            echo "   전날 스크리닝(quant_daily.yml)이 먼저 성공해야 합니다."
-            exit 1
+            echo "⚠ signals/ 폴더에 매매신호 JSON이 없습니다 — 이번 실행은 청산만 수행."
+            echo "buy_enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            cp signals/매매신호_KR_*.json .
+            echo "▶ 신호 파일 준비 완료:"
+            ls -la 매매신호_KR_*.json
+            # 최신 신호 파일의 수정일이 7일(달력일) 이상 과거면 매수 스킵
+            newest=$(ls -t signals/매매신호_KR_*.json | head -1)
+            age_days=$(( ( $(date +%s) - $(date -r "$newest" +%s) ) / 86400 ))
+            echo "▶ 최신 신호 파일: $newest (경과 ${age_days}일)"
+            if [ "$age_days" -ge 7 ]; then
+              echo "⚠ 신호가 ${age_days}일 묵음 — 스크리너(quant_daily.yml) 트리거가 죽었을 가능성. 매수 스킵."
+              echo "buy_enabled=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "buy_enabled=true" >> "$GITHUB_OUTPUT"
+            fi
           fi
-          cp signals/매매신호_KR_*.json .
-          echo "▶ 신호 파일 준비 완료:"
-          ls -la 매매신호_KR_*.json
 
-      # ⑤ 직전 실행에서 커밋해둔 거래상태(보유포지션/재투자풀/오늘의 대기목록) 복원
-      #    → trade_state_kiwoom/ (git 추적) 에서 trades/ (스크립트가 읽는 경로) 로 복사
-      #    브로커 잔고 동기화(sync_positions_from_broker)가 메인 안전장치이고,
-      #    이건 그게 실패했을 때(키움 잔고조회 오류 등) 쓰는 2차 안전장치.
-      #    ⚠ intraday_pending_YYYYMMDD.json은 "오늘 이미 몇 번 시도했는지"를
-      #      기록하는 파일이라, 이게 없으면 장중 반복 실행마다 재시도 횟수를
-      #      처음부터 다시 세서 MAX_TRIES_PER_STOCK 제한이 무력화된다 — KIS판엔
-      #      없던, quant_signal_check.py 특유의 영속화 포인트.
+      # ⑤ 직전 실행에서 커밋해둔 거래상태 복원
+      #    [v2] kiwoom_exit_state.json (청산 상태: 부분익절 플래그/최고가) 추가
       - name: 거래상태 복원
         run: |
           mkdir -p trades trade_state_kiwoom
-          for f in kiwoom_positions.json kiwoom_reinvest_pool.json; do
+          for f in kiwoom_positions.json kiwoom_reinvest_pool.json kiwoom_exit_state.json; do
             if [ -f trade_state_kiwoom/$f ]; then
               cp trade_state_kiwoom/$f trades/$f
               echo "▶ $f 복원 완료"
@@ -85,6 +106,10 @@ jobs:
 
       # ⑥ 키움 설정파일 생성 (secrets에서 읽어와 매 실행마다 생성)
       #    ★ 모의투자 단계에서는 KIWOOM_IS_REAL 시크릿을 "false"로 등록
+      #    [v2] 청산 파라미터 추가: tp1_sell_ratio(1차익절 매도비율),
+      #         trail_giveback_pct(트레일링 반납허용%).
+      #    ⚠ take_profit_min_pct 2.0은 거래비용 감안 시 얇음 — 5.0으로 상향함.
+      #      (기존 2.0으로 되돌리려면 아래 값만 수정)
       - name: 키움 설정파일 생성
         run: |
           cat > kiwoom_config.json << EOF
@@ -94,8 +119,10 @@ jobs:
             "is_real":             ${{ secrets.KIWOOM_IS_REAL }},
             "max_daily_trades":    10,
             "stop_loss_pct":       7.0,
-            "take_profit_min_pct": 2.0,
+            "take_profit_min_pct": 5.0,
             "take_profit_max_pct": 25.0,
+            "tp1_sell_ratio":      0.30,
+            "trail_giveback_pct":  5.0,
             "base_invest_amount":  10000000,
             "reinvest_mode":       true,
             "buy_top_n":           20
@@ -114,8 +141,23 @@ jobs:
           EOF
           echo "▶ 텔레그램 설정파일 생성 완료"
 
-      # ⑧ 키움 L1+L2 게이트 체크 → 통과 종목 매수 실행
-      - name: 키움 자동매매 실행
+      # ⑧-A [v2 신규] 보유종목 청산 체크 — 매수보다 먼저 실행
+      #    (손절/부분익절/트레일링. 청산으로 확보된 현금이 이후 매수 예산에 반영됨)
+      #    신호 파일 유무와 무관하게 항상 실행 — "매도 로직 부재" 공백을 메우는 핵심 단계
+      - name: 🔻 보유종목 청산 체크 (손절/익절/트레일링)
+        run: |
+          DRY_FLAG=""
+          if [ "${{ github.event.inputs.exit_dry_run }}" = "true" ]; then
+            DRY_FLAG="--dry-run"
+            echo "▶ dry-run 모드: 매도주문 없이 판정만 출력"
+          fi
+          python quant_exit_check.py --broker kiwoom --output-dir . $DRY_FLAG
+          echo "▶ 청산 체크 완료"
+
+      # ⑧-B 키움 L1+L2 게이트 체크 → 통과 종목 매수 실행
+      #    [v2] 신호 파일이 없거나 7일 이상 묵으면 스킵 (④단계 판정)
+      - name: 키움 자동매매 실행 (매수)
+        if: steps.signals.outputs.buy_enabled == 'true'
         run: |
           python quant_signal_check.py --broker kiwoom --interval 5 --output-dir .
           echo "▶ 실행 완료"
@@ -125,14 +167,15 @@ jobs:
         if: always()
         run: rm -f kiwoom_config.json telegram_config.json
 
-      # ⑩ 거래상태(보유포지션/재투자풀/오늘의 대기목록) 다음 실행을 위해 레포에 커밋
+      # ⑩ 거래상태 다음 실행을 위해 레포에 커밋
+      #    [v2] kiwoom_exit_state.json 추가
       #    ⚠ 계좌 보유종목·수량이 git 히스토리에 평문으로 남음 — 레포가
       #      private인지 다시 한번 확인할 것 (KIS 쪽 trade_state/와 동일한 주의사항).
       - name: 거래상태 커밋
         if: always()
         run: |
           mkdir -p trade_state_kiwoom
-          for f in kiwoom_positions.json kiwoom_reinvest_pool.json; do
+          for f in kiwoom_positions.json kiwoom_reinvest_pool.json kiwoom_exit_state.json; do
             cp trades/$f trade_state_kiwoom/$f 2>/dev/null || echo "▶ $f 없음"
           done
           if ls trades/intraday_pending_*.json >/dev/null 2>&1; then
