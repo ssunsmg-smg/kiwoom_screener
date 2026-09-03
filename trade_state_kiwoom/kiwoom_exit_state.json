@@ -1,0 +1,53 @@
+{
+  "positions": {
+    "000270": {
+      "first_seen": "20260903",
+      "tp1_done": false,
+      "peak_price": 127650.0,
+      "entry_price": 151433.0,
+      "closed": "STOP",
+      "closed_time": "09/03 12:02"
+    },
+    "003490": {
+      "first_seen": "20260903",
+      "tp1_done": true,
+      "peak_price": 29150.0,
+      "entry_price": 26700.0,
+      "tp1_time": "09/03 12:02"
+    },
+    "005850": {
+      "first_seen": "20260903",
+      "tp1_done": false,
+      "peak_price": 50800.0,
+      "entry_price": 56200.0,
+      "closed": "STOP",
+      "closed_time": "09/03 12:02"
+    },
+    "012630": {
+      "first_seen": "20260903",
+      "tp1_done": false,
+      "peak_price": 0.0
+    },
+    "018670": {
+      "first_seen": "20260903",
+      "tp1_done": false,
+      "peak_price": 238000.0,
+      "entry_price": 242500.0
+    },
+    "028670": {
+      "first_seen": "20260903",
+      "tp1_done": true,
+      "peak_price": 6050.0,
+      "entry_price": 5300.0,
+      "tp1_time": "09/03 12:02"
+    },
+    "192080": {
+      "first_seen": "20260903",
+      "tp1_done": false,
+      "peak_price": 57500.0,
+      "entry_price": 63053.0,
+      "closed": "STOP",
+      "closed_time": "09/03 12:02"
+    }
+  }
+}
