@@ -1,3 +1,30 @@
 {
-  "positions": {}
+  "positions": {
+    "003490": {
+      "first_seen": "20260907",
+      "tp1_done": true,
+      "peak_price": 30150.0,
+      "entry_price": 26700.0,
+      "tp1_time": "09/07 12:01"
+    },
+    "012630": {
+      "first_seen": "20260907",
+      "tp1_done": false,
+      "peak_price": 22600.0,
+      "entry_price": 21600.0
+    },
+    "018670": {
+      "first_seen": "20260907",
+      "tp1_done": false,
+      "peak_price": 241000.0,
+      "entry_price": 242500.0
+    },
+    "028670": {
+      "first_seen": "20260907",
+      "tp1_done": true,
+      "peak_price": 5990.0,
+      "entry_price": 5300.0,
+      "tp1_time": "09/07 12:01"
+    }
+  }
 }
