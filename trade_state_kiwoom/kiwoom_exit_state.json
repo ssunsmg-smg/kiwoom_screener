@@ -3,7 +3,7 @@
     "003490": {
       "first_seen": "20260907",
       "tp1_done": true,
-      "peak_price": 30150.0,
+      "peak_price": 30600.0,
       "entry_price": 26700.0,
       "tp1_time": "09/07 12:01"
     },
@@ -16,7 +16,7 @@
     "018670": {
       "first_seen": "20260907",
       "tp1_done": false,
-      "peak_price": 241000.0,
+      "peak_price": 244500.0,
       "entry_price": 242500.0
     },
     "028670": {
