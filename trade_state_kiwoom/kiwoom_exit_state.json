@@ -9,9 +9,10 @@
     },
     "012630": {
       "first_seen": "20260907",
-      "tp1_done": false,
-      "peak_price": 22600.0,
-      "entry_price": 21600.0
+      "tp1_done": true,
+      "peak_price": 24450.0,
+      "entry_price": 21600.0,
+      "tp1_time": "09/09 12:13"
     },
     "018670": {
       "first_seen": "20260907",
