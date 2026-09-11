@@ -5,14 +5,18 @@
       "tp1_done": true,
       "peak_price": 30600.0,
       "entry_price": 26700.0,
-      "tp1_time": "09/07 12:01"
+      "tp1_time": "09/07 12:01",
+      "closed": "TRAIL",
+      "closed_time": "09/11 12:08"
     },
     "012630": {
       "first_seen": "20260907",
       "tp1_done": true,
-      "peak_price": 26450.0,
+      "peak_price": 28400.0,
       "entry_price": 21600.0,
-      "tp1_time": "09/09 12:13"
+      "tp1_time": "09/09 12:13",
+      "closed": "TP_MAX",
+      "closed_time": "09/11 12:08"
     },
     "018670": {
       "first_seen": "20260907",
@@ -23,7 +27,7 @@
     "028670": {
       "first_seen": "20260907",
       "tp1_done": true,
-      "peak_price": 5990.0,
+      "peak_price": 6120.0,
       "entry_price": 5300.0,
       "tp1_time": "09/07 12:01"
     }
