@@ -1,3 +1,17 @@
 {
-  "positions": {}
+  "positions": {
+    "018670": {
+      "first_seen": "20260923",
+      "tp1_done": false,
+      "peak_price": 239500.0,
+      "entry_price": 242500.0
+    },
+    "028670": {
+      "first_seen": "20260923",
+      "tp1_done": true,
+      "peak_price": 5650.0,
+      "entry_price": 5300.0,
+      "tp1_time": "09/23 12:27"
+    }
+  }
 }
