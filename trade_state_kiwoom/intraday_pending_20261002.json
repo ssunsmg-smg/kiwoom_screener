@@ -3,9 +3,9 @@
   "candidates": {
     "005850": {
       "status": "pending",
-      "tries": 1,
+      "tries": 2,
       "first_seen": "20261002",
-      "last_check": "04:12:05",
+      "last_check": "10:31:26",
       "last_detail": {
         "error": "데이터 부족 (0개 < 최소 10개)"
       }
