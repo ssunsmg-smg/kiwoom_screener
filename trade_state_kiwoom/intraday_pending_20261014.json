@@ -1,0 +1,14 @@
+{
+  "date": "20261014",
+  "candidates": {
+    "005850": {
+      "status": "pending",
+      "tries": 1,
+      "first_seen": "20261014",
+      "last_check": "03:39:18",
+      "last_detail": {
+        "error": "데이터 부족 (0개 < 최소 10개)"
+      }
+    }
+  }
+}
