@@ -1,0 +1,14 @@
+{
+  "date": "20261110",
+  "candidates": {
+    "005850": {
+      "status": "pending",
+      "tries": 1,
+      "first_seen": "20261110",
+      "last_check": "06:01:32",
+      "last_detail": {
+        "error": "데이터 부족 (0개 < 최소 10개)"
+      }
+    }
+  }
+}
