@@ -3624,6 +3624,21 @@ def _ta_bb(close, period=20, std_mult=2.0):
     return round(u), round(l), round(pct_b*100,1), round(bw,1), sig
 
 
+BOX_MIN_SWINGS = 3   # 박스 인정 최소 왕복 횟수 (box_breakout_study.py --compare 로 검증)
+
+
+def _box_swing_count(closes, top, bot, hi=0.65, lo=0.35):
+    """종가가 박스 상단권(hi↑)과 하단권(lo↓)을 번갈아 오간 횟수"""
+    if top <= bot:
+        return 0
+    pos = (np.asarray(closes, dtype=float) - bot) / (top - bot)
+    zone = np.where(pos >= hi, 1, np.where(pos <= lo, -1, 0))
+    zone = zone[zone != 0]
+    if len(zone) < 2:
+        return 0
+    return int((zone[1:] != zone[:-1]).sum())
+
+
 def _detect_box_range(close_s, high_s, low_s, vol_s=None, recent_excl=3):
     """
     박스권(장기 횡보 구간) 탐지 (v41g 신규)
@@ -3642,7 +3657,7 @@ def _detect_box_range(close_s, high_s, low_s, vol_s=None, recent_excl=3):
          (긴 박스일수록 돌파 시 추세 신뢰도가 높다고 보기 때문).
       ③ 박스 조건: 구간 내 가격폭 35% 이내
                     + 전반부·후반부 평균가 차이(추세/드리프트) 12% 이내
-                    + 종가의 90% 이상이 밴드(상단×1.02~하단×0.98) 안에 머묾
+                    + 종가가 상단권(65%↑)·하단권(35%↓)을 3회 이상 왕복
          → 추세(상승·하락) 구간은 제외하고 '진짜 횡보'만 박스권으로 인정.
       ④ 산정된 박스를 기준으로 '오늘 종가'가 상단을 넘었는지 비교한다.
          거래량 급증(최근5일 거래대금 ÷ 20일 거래대금 ≥ 1.5배) 상태에서
@@ -3678,11 +3693,14 @@ def _detect_box_range(close_s, high_s, low_s, vol_s=None, recent_excl=3):
             avg_back  = float(c_win.iloc[half:].mean())
             drift_pct = abs(avg_back - avg_front) / avg_front * 100 if avg_front > 0 else 999
 
-            tol_top = top * 1.02
-            tol_bot = bot * 0.98
-            inside_ratio = float(((c_win >= tol_bot) & (c_win <= tol_top)).mean())
+            # 왕복(스윙) 횟수: 종가가 박스 상단권(65%↑)과 하단권(35%↓)을
+            # 번갈아 오간 횟수. V자·역V자(한 번 빠졌다 돌아온 것)는 2회이므로
+            # BOX_MIN_SWINGS(3)회 이상 오가야 '진짜 횡보'로 인정한다.
+            # (2026-11-18 수정 전: '종가 90%가 밴드 안' 조건은 상단·하단을 구간
+            #  최고가·최저가로 잡아 항상 100%가 되어 걸러내는 효과가 없었음)
+            swings = _box_swing_count(c_win.values, top, bot)
 
-            if width_pct <= 35 and drift_pct <= 12 and inside_ratio >= 0.90:
+            if width_pct <= 35 and drift_pct <= 12 and swings >= BOX_MIN_SWINGS:
                 best = {"window": w, "top": top, "bot": bot, "width_pct": width_pct}
                 break   # 가장 긴 구간부터 검사하므로 처음 통과하는 것을 채택
         except Exception:
@@ -6489,7 +6507,7 @@ def build_excel(df_all, df_top, label, args, output_dir=BASE_DIR):
 
         ("31", "박스권여부",
          "최근 가격이 일정 구간(60~120거래일,\n약 3~6개월) 안에서 횡보했는지 여부.\n1개월 미만 단기 등락은 박스권으로 보지 않음.",
-         "120일→90일→60일 순으로 검사:\n가격폭≤35% + 추세(드리프트)≤12%\n+ 종가의 90%이상이 밴드 안에 머묾",
+         "120일→90일→60일 순으로 검사:\n가격폭≤35% + 추세(드리프트)≤12%\n+ 상단권·하단권 3회 이상 왕복",
          "✅ Y\n→ 장기 횡보 구간 형성\n→ 돌파 시 추세 신뢰도 높음",
          "─ N\n→ 추세장이거나 등락이 큰 종목",
          "박스권 여부만으로는 매수신호 아님\n→ 박스이탈신호와 함께 판단"),
