@@ -1,0 +1,79 @@
+name: 박스 눌림매수 가상장부 (장 마감 후, 주문 없음)
+
+# 매일 장 마감 후 box_paper_trader.py 실행
+#  · 실제 일봉으로 가상 체결/손절/익절 판정 → box_state/ 에 커밋 → 텔레그램 요약
+#  · KIS 주문을 내지 않는다 (기존 퀀트 시스템의 브로커 잔고 동기화와 충돌 방지)
+#  · 16:41 KST(07:41 UTC) 월~금 — 정시는 GitHub 스케줄이 몰려 지연되므로 41분으로 둠
+#    몇 분 늦어도 결과는 같다 (그날 일봉 기준 판정)
+
+on:
+  schedule:
+    - cron: '41 7 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 다른 워크플로우와 같은 브랜치에 push 하므로 직렬화
+concurrency:
+  group: kis-trading-state
+  cancel-in-progress: false
+
+jobs:
+  box-paper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 패키지 설치
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 텔레그램 설정 (시크릿 없으면 알림 없이 진행)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+            jq -n --arg t "$TELEGRAM_BOT_TOKEN" --arg c "$TELEGRAM_CHAT_ID" \
+              '{bot_token: $t, chat_id: $c}' > telegram_config.json
+          fi
+
+      - name: 가상장부 실행
+        run: python box_paper_trader.py --top 500
+
+      - name: 설정파일 삭제
+        if: always()
+        run: rm -f telegram_config.json
+
+      - name: 장부 커밋
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add box_state/ 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "▶ 변경사항 없음"; exit 0
+          fi
+          git commit -m "박스 가상장부 $(TZ=Asia/Seoul date '+%Y-%m-%d')"
+          for i in 1 2 3; do
+            git push origin "HEAD:${GITHUB_REF_NAME}" && break
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            sleep 5
+          done
+
+      - name: 스캔 결과 보관
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 박스장부-${{ github.run_number }}
+          path: box_state/
+          retention-days: 30
+          if-no-files-found: warn
