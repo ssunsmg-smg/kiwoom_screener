@@ -2,7 +2,7 @@ name: 박스 눌림매수 가상장부 (장 마감 후, 주문 없음)
 
 # 매일 장 마감 후 box_paper_trader.py 실행
 #  · 실제 일봉으로 가상 체결/손절/익절 판정 → box_state/ 에 커밋 → 텔레그램 요약
-#  · KIS 주문을 내지 않는다 (기존 퀀트 시스템의 브로커 잔고 동기화와 충돌 방지)
+#  · 키움 주문을 내지 않는다 (키움 자동매매의 브로커 잔고 동기화와 충돌 방지)
 #  · 16:41 KST(07:41 UTC) 월~금 — 정시는 GitHub 스케줄이 몰려 지연되므로 41분으로 둠
 #    몇 분 늦어도 결과는 같다 (그날 일봉 기준 판정)
 
@@ -16,7 +16,7 @@ permissions:
 
 # 다른 워크플로우와 같은 브랜치에 push 하므로 직렬화
 concurrency:
-  group: kis-trading-state
+  group: kiwoom-trading-state
   cancel-in-progress: false
 
 jobs:
@@ -48,6 +48,17 @@ jobs:
 
       - name: 가상장부 실행
         run: python box_paper_trader.py --top 500
+
+      - name: 실패 알림 (실행이 중간에 멈추면 텔레그램으로 바로 알림)
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          [ -z "${TELEGRAM_BOT_TOKEN:-}" ] && exit 0
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=⚠️ 박스 가상장부 실행 실패 $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M') — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" > /dev/null
 
       - name: 설정파일 삭제
         if: always()
