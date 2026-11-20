@@ -1,7 +1,10 @@
 name: 퀀트 자동매매 (장중 키움 REST API 주문 전용)
 on:
   schedule:
-    - cron: '*/15 0-6 * * 1-5'   # 한국시간 09:00~15:59, 평일, 15분 간격
+    # [v3] 정각·15분 배수(:00 :15 :30 :45)는 GitHub 전체 트래픽이 몰려 대량 드랍된다.
+    #      4분씩 비켜서 등록 → 드랍이 줄어든다. (외부 트리거가 주력, 이건 백업)
+    - cron: '4,19,34,49 0-5 * * 1-5'   # 한국시간 09:04~14:49, 평일
+    - cron: '4,19 6 * * 1-5'           # 한국시간 15:04, 15:19 (마감 전 청산 체크)
   # ⚠ [v2 확인사항] GitHub의 */15 스케줄은 대량 드랍됨이 실측으로 확인됨
   #   (설정상 하루 28회여야 하는데 실제 실행은 3~4회, 간격 2시간+).
   #   아래 주석의 cron-job.org 계획이 실제로는 동작하지 않고 있었음
@@ -32,6 +35,12 @@ on:
 
 permissions:
   contents: write   # 거래상태(kiwoom_positions/kiwoom_reinvest_pool/intraday_pending/exit_state)를 레포에 커밋하기 위해 필요
+
+# [v3] 같은 브랜치에 push 하는 워크플로우(quant_daily / box_paper)와 겹치지 않게 직렬화
+#      겹치면 push 가 거절돼 거래상태가 저장되지 않는다
+concurrency:
+  group: kiwoom-trading-state
+  cancel-in-progress: false
 
 jobs:
   kiwoom-trade:
@@ -69,13 +78,22 @@ jobs:
             echo "⚠ signals/ 폴더에 매매신호 JSON이 없습니다 — 이번 실행은 청산만 수행."
             echo "buy_enabled=false" >> "$GITHUB_OUTPUT"
           else
-            cp signals/매매신호_KR_*.json .
-            echo "▶ 신호 파일 준비 완료:"
-            ls -la 매매신호_KR_*.json
-            # 최신 신호 파일의 수정일이 7일(달력일) 이상 과거면 매수 스킵
-            newest=$(ls -t signals/매매신호_KR_*.json | head -1)
-            age_days=$(( ( $(date +%s) - $(date -r "$newest" +%s) ) / 86400 ))
-            echo "▶ 최신 신호 파일: $newest (경과 ${age_days}일)"
+            # [v3 버그수정] 예전 방식(파일 수정일 date -r)은 항상 0일로 나왔다.
+            #   actions/checkout 이 파일을 새로 받으면서 수정일이 '지금'으로 바뀌기 때문.
+            #   → 몇 달 묵은 신호로도 매수할 수 있었음.
+            #   이제 파일 이름의 날짜(매매신호_KR_YYYYMMDD_HHMMSS.json)로 계산하고,
+            #   최신 파일 1개만 작업 폴더에 둔다 (오래된 신호가 섞이지 않게).
+            newest=$(ls signals/매매신호_KR_*.json | sort | tail -1)
+            cp "$newest" .
+            echo "▶ 신호 파일 준비 완료: $newest"
+            sig_date=$(basename "$newest" | grep -o '20[0-9]\{6\}' | head -1)
+            if [ -z "$sig_date" ]; then
+              echo "⚠ 신호 파일 이름에서 날짜를 못 읽음 — 안전하게 매수 스킵"
+              age_days=999
+            else
+              age_days=$(( ( $(TZ=Asia/Seoul date +%s) - $(TZ=Asia/Seoul date -d "$sig_date" +%s) ) / 86400 ))
+            fi
+            echo "▶ 신호일 ${sig_date:-?} (경과 ${age_days}일)"
             if [ "$age_days" -ge 7 ]; then
               echo "⚠ 신호가 ${age_days}일 묵음 — 스크리너(quant_daily.yml) 트리거가 죽었을 가능성. 매수 스킵."
               echo "buy_enabled=false" >> "$GITHUB_OUTPUT"
@@ -86,10 +104,11 @@ jobs:
 
       # ⑤ 직전 실행에서 커밋해둔 거래상태 복원
       #    [v2] kiwoom_exit_state.json (청산 상태: 부분익절 플래그/최고가) 추가
+      #    [v3] kiwoom_trades.json (체결 기록 — 매매 현황판·텔레그램 일일요약용) 추가
       - name: 거래상태 복원
         run: |
           mkdir -p trades trade_state_kiwoom
-          for f in kiwoom_positions.json kiwoom_reinvest_pool.json kiwoom_exit_state.json; do
+          for f in kiwoom_positions.json kiwoom_reinvest_pool.json kiwoom_exit_state.json kiwoom_trades.json; do
             if [ -f trade_state_kiwoom/$f ]; then
               cp trade_state_kiwoom/$f trades/$f
               echo "▶ $f 복원 완료"
@@ -175,7 +194,7 @@ jobs:
         if: always()
         run: |
           mkdir -p trade_state_kiwoom
-          for f in kiwoom_positions.json kiwoom_reinvest_pool.json kiwoom_exit_state.json; do
+          for f in kiwoom_positions.json kiwoom_reinvest_pool.json kiwoom_exit_state.json kiwoom_trades.json; do
             cp trades/$f trade_state_kiwoom/$f 2>/dev/null || echo "▶ $f 없음"
           done
           if ls trades/intraday_pending_*.json >/dev/null 2>&1; then
@@ -188,8 +207,14 @@ jobs:
           if git diff --staged --quiet; then
             echo "▶ 변경사항 없음 — 커밋 스킵"
           else
-            git commit -m "키움 거래상태 갱신 ${{ github.run_number }} ($(date '+%Y-%m-%d %H:%M'))"
-            git push
+            git commit -m "키움 거래상태 갱신 ${{ github.run_number }} ($(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M') KST)"
+            # [v3] push 충돌 시 rebase 후 재시도 (예전엔 한 번 실패하면 거래상태가 유실)
+            for i in 1 2 3; do
+              if git push origin "HEAD:${GITHUB_REF_NAME}"; then echo "▶ push 성공"; break; fi
+              echo "▶ push 충돌 — rebase 후 재시도 ($i/3)"
+              git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+              sleep 5
+            done
           fi
 
       # ⑪ 거래로그 + 분봉/게이트 로그 아티팩트 저장 (90일 보관)
