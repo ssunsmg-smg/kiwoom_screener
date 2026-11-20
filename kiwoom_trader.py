@@ -32,11 +32,18 @@ import time
 import threading
 from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import requests
 
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 TRADE_DIR = os.path.join(BASE_DIR, "trades")
+KST = ZoneInfo("Asia/Seoul")
+
+
+def now_kst() -> datetime:
+    """GitHub Actions 서버는 UTC라 datetime.now()가 9시간 느리게 찍힌다 → 기록용 시각은 항상 한국시간"""
+    return datetime.now(KST).replace(tzinfo=None)
 
 
 class KiwoomRestTrader:
@@ -65,6 +72,9 @@ class KiwoomRestTrader:
         # 보유 포지션 영속화 — 파일이 없으면 KIS판처럼 "보유 0종목"으로 잘못 판단할 수 있어
         # sync_positions_from_broker()로 항상 실제 잔고를 우선시함
         self._positions_path = os.path.join(TRADE_DIR, "kiwoom_positions.json")
+        # 체결(주문) 기록 — 매매 현황판(trade_board.py)이 읽는 파일. 매 주문마다 한 줄씩 추가
+        self._trades_path = os.path.join(TRADE_DIR, "kiwoom_trades.json")
+        self._names = {}
         self._load_config()
         self._load_reinvest_pool()
         self._load_positions()
@@ -142,7 +152,7 @@ class KiwoomRestTrader:
             os.makedirs(TRADE_DIR, exist_ok=True)
             with open(self._positions_path, "w", encoding="utf-8") as f:
                 json.dump({"positions": self.positions,
-                           "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+                           "updated_at": now_kst().strftime("%Y-%m-%d %H:%M:%S")},
                           f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"  ⚠ 키움 포지션 저장 오류: {e}")
@@ -269,8 +279,11 @@ class KiwoomRestTrader:
                     self.daily_trades += 1
                     order_no = data.get("ord_no", "")
                     cur_price = price or self.get_current_price(stock_code)
+                    avg_before = self.positions.get(stock_code, {}).get("avg_price")
 
                     self._update_position(stock_code, order_type, qty, cur_price)
+                    self._log_trade(stock_code, order_type, qty, cur_price, order_no, reason,
+                                    market=(price == 0), avg_before=avg_before)
 
                     mode_str = "🔴실전" if self.is_real else "🟡모의"
                     emoji = "📈" if order_type == "BUY" else "📉"
@@ -284,6 +297,48 @@ class KiwoomRestTrader:
             except Exception as e:
                 print(f"  ⚠ 키움 주문 오류: {e}")
                 return {"success": False, "msg": str(e)}
+
+    # ── 체결 기록 (현황판용) ──
+    def _stock_name(self, code: str) -> str:
+        if code in self._names:
+            return self._names[code]
+        name = code
+        try:
+            resp = requests.post(f"{self.base_url}/api/dostk/stkinfo", headers=self._headers("ka10001"),
+                                 json={"stk_cd": code}, timeout=10)
+            name = (resp.json().get("stk_nm") or code).strip()
+        except Exception:
+            pass
+        self._names[code] = name
+        return name
+
+    def _log_trade(self, code, order_type, qty, price, order_no, reason, market, avg_before):
+        """주문 1건을 trades/kiwoom_trades.json 에 추가.
+        ※ 가격은 '주문 시점 가격'(시장가는 직전 현재가) — 실제 체결가와 몇 호가 다를 수 있음."""
+        try:
+            rows = []
+            if os.path.exists(self._trades_path):
+                with open(self._trades_path, "r", encoding="utf-8") as f:
+                    rows = json.load(f).get("trades", [])
+            side = "매수" if order_type == "BUY" else "매도"
+            amt = int(qty) * int(price or 0)
+            rec = {"time": now_kst().strftime("%Y-%m-%d %H:%M:%S"), "side": side, "code": code,
+                   "name": self._stock_name(code), "qty": int(qty), "price": int(price or 0), "amount": amt,
+                   "order_type": "시장가" if market else "지정가", "order_no": order_no, "reason": reason or "",
+                   "mode": "실전" if self.is_real else "모의"}
+            if side == "매도" and avg_before:
+                fee = round(amt * 0.0023)                      # 매도수수료+거래세 추정
+                rec["pnl"] = round((price - avg_before) * qty - fee)
+                rec["ret"] = round(price / avg_before - 1 - 0.0025, 4)
+                rec["fee"] = fee
+            else:
+                rec["fee"] = round(amt * 0.00015)
+            rows.append(rec)
+            os.makedirs(TRADE_DIR, exist_ok=True)
+            with open(self._trades_path, "w", encoding="utf-8") as f:
+                json.dump({"trades": rows[-2000:], "updated_at": rec["time"]}, f, ensure_ascii=False, indent=1)
+        except Exception as e:
+            print(f"  ⚠ 키움 체결기록 저장 오류: {e}")   # 기록 실패가 매매를 막으면 안 됨
 
     def _update_position(self, code, order_type, qty, price):
         if order_type == "BUY":

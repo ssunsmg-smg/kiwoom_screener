@@ -25,6 +25,13 @@ import requests
 
 from kiwoom_trader import KiwoomRestTrader   # 기존 인증·주문 클래스 재사용
 
+try:
+    from kiwoom_trader import now_kst as _kst_now
+except ImportError:                          # 구버전 kiwoom_trader.py 와 함께 써도 동작
+    from zoneinfo import ZoneInfo
+    def _kst_now():
+        return datetime.now(ZoneInfo("Asia/Seoul")).replace(tzinfo=None)
+
 
 class KiwoomIntraday(KiwoomRestTrader):
     """
@@ -64,11 +71,18 @@ class KiwoomIntraday(KiwoomRestTrader):
             )
             data = resp.json()
             if data.get("return_code") != 0:
-                print(f"  ⚠ [분봉조회] {stock_code} 실패: {data.get('return_msg', '')}")
+                print(f"  ⚠ [분봉조회] {stock_code} 실패: code={data.get('return_code')} "
+                      f"{data.get('return_msg', '')} (HTTP {resp.status_code}, "
+                      f"{'실전' if self.is_real else '모의'}서버, 한국시각 {_kst_now():%H:%M})")
                 return pd.DataFrame()
 
             rows = data.get("stk_min_pole_chart_qry", [])
             if not rows:
+                # 0건 원인 추적용 — 다음 실행 로그에서 바로 원인이 보이게
+                t = _kst_now()
+                why = "장 시작 전" if t.hour < 9 else ("장 마감 후" if (t.hour, t.minute) > (15, 30) else "장중")
+                print(f"  ⚠ [분봉조회] {stock_code} 0건 — 한국시각 {t:%H:%M}({why}), "
+                      f"{'실전' if self.is_real else '모의'}서버, 응답키 {list(data.keys())[:6]}")
                 return pd.DataFrame()
 
             df = pd.DataFrame(rows)
@@ -136,7 +150,7 @@ class KiwoomIntraday(KiwoomRestTrader):
         리턴: {"date": "YYYYMMDD", "foreign_net": int, "institution_net": int, "individual_net": 0}
         (키움 ka10045는 개인 순매수는 안 줌 — 항상 0으로 채움)
         """
-        today = datetime.now().strftime("%Y%m%d")
+        today = _kst_now().strftime("%Y%m%d")
         try:
             rows = self._fetch_investor_trend(stock_code, today, today)
             if not rows:
@@ -157,7 +171,7 @@ class KiwoomIntraday(KiwoomRestTrader):
         최근 N영업일 외국인/기관 순매수 합산. ka10045가 날짜범위를 직접 받으므로,
         여유있게 days*2일 전부터 조회해서(주말/휴장일 버퍼) 앞에서 N개 행만 합산.
         """
-        end_dt = datetime.now()
+        end_dt = _kst_now()
         strt_dt = end_dt - timedelta(days=days * 2 + 3)
         try:
             rows = self._fetch_investor_trend(

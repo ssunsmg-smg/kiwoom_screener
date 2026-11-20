@@ -66,8 +66,9 @@ def _bars_after(df, date_str):
 
 def _close_pos(L, p, date, px, reason, log):
     ret = px / p["entry"] - 1 - COST
+    qty = p.get("qty") or max(1, int(PER_TRADE // p["entry"]))
     L["closed"].append({**p, "exit_date": str(pd.Timestamp(date).date()), "exit": round(px, 1),
-                        "reason": reason, "ret": round(ret, 4), "pnl": round(PER_TRADE * ret)})
+                        "reason": reason, "ret": round(ret, 4), "pnl": round(qty * p["entry"] * ret)})
     log.append(f"{'🟢' if ret > 0 else '🔴'} 청산 {p['name']}({p['code']}) {reason} {ret:+.1%}")
 
 
@@ -107,7 +108,7 @@ def step_order(o_, df, L, log):
         if r["Low"] <= o_["limit"]:
             e = float(min(o_["limit"], r["Open"]))
             p = {"code": o_["code"], "name": o_["name"], "score": o_["score"], "breakout": o_["breakout"],
-                 "entry_date": str(d.date()), "entry": round(e, 1), "qty": int(PER_TRADE // e),
+                 "entry_date": str(d.date()), "entry": round(e, 1), "qty": max(1, int(PER_TRADE // e)),
                  "stop": round(e * (1 - sc.SL), 1), "target": round(e * (1 + sc.TP), 1),
                  "days": 0, "last": str((d - pd.Timedelta(days=1)).date()), "now": round(r["Close"], 1)}
             log.append(f"✅ 체결 {p['name']}({p['code']}) {e:,.0f}원 · 손절 {p['stop']:,.0f} · 목표 {p['target']:,.0f}")
@@ -148,18 +149,35 @@ def write_report(L, today):
         f.write("\n".join(lines) + "\n")
 
 
-def telegram(text):
+def telegram(text, doc=None):
+    """text 전송, doc 이 있으면 파일(현황판 HTML)도 함께 전송"""
     path = os.path.join(BASE, "telegram_config.json")
     if not os.path.exists(path):
         print("  (텔레그램 설정 없음 — 알림 생략)")
         return
     import requests
     cfg = json.load(open(path, encoding="utf-8"))
+    api = f"https://api.telegram.org/bot{cfg['bot_token']}"
     try:
-        requests.post(f"https://api.telegram.org/bot{cfg['bot_token']}/sendMessage",
-                      data={"chat_id": cfg["chat_id"], "text": text}, timeout=10)
+        if doc and os.path.exists(doc):
+            with open(doc, "rb") as f:
+                requests.post(f"{api}/sendDocument", data={"chat_id": cfg["chat_id"], "caption": text[:1000]},
+                              files={"document": (os.path.basename(doc), f, "text/html")}, timeout=30)
+            if len(text) > 1000:
+                requests.post(f"{api}/sendMessage", data={"chat_id": cfg["chat_id"], "text": text}, timeout=10)
+        else:
+            requests.post(f"{api}/sendMessage", data={"chat_id": cfg["chat_id"], "text": text}, timeout=10)
     except Exception as e:  # noqa
         print(f"  텔레그램 실패: {e}")
+
+
+def log_run(rec):
+    rp = os.path.join(STATE_DIR, "runs.json")
+    runs = json.load(open(rp, encoding="utf-8")) if os.path.exists(rp) else []
+    runs.append(rec)
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(rp, "w", encoding="utf-8") as f:
+        json.dump(runs[-250:], f, ensure_ascii=False, indent=1)
 
 
 # ───────────────────────────────────────── 메인
@@ -233,6 +251,14 @@ def main():
     L["updated"] = today
     save_ledger(L)
     write_report(L, today)
+    from zoneinfo import ZoneInfo
+    log_run({"run_at": datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M"),
+             "run_date": datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d"), "data_date": today,
+             "n_prices": len(prices), "n_breakouts": int(len(allb)), "ok": True,
+             "n_new": sum(x.startswith("📝") for x in log), "n_fills": sum(x.startswith("✅") for x in log),
+             "n_exits": sum("청산" in x for x in log), "positions": len(L["positions"]), "orders": len(L["orders"])})
+    import trade_board
+    board = trade_board.build()
     s = stats(L)
     head = f"📦 박스 눌림매수 가상장부 {today}\n보유 {len(L['positions'])} · 대기 {len(L['orders'])} · 최근돌파 {len(allb)}"
     if s["closed"]:
@@ -240,7 +266,7 @@ def main():
     msg = head + ("\n\n" + "\n".join(log) if log else "\n\n오늘 변동 없음")
     print(msg)
     if not a.no_telegram:
-        telegram(msg)
+        telegram(msg + "\n\n📊 첨부한 현황판 파일을 열어 보세요", doc=board)
 
 
 if __name__ == "__main__":

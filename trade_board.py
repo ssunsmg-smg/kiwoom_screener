@@ -63,29 +63,101 @@ def load_box_paper(path=os.path.join(BASE, "box_state")):
     return trades, poss, runs
 
 
+def _pick(d, *keys, default=None):
+    for k in keys:
+        if isinstance(d, dict) and d.get(k) not in (None, ""):
+            return d[k]
+    return default
+
+
+def _ymd(x):
+    x = str(x or "")
+    return f"{x[:4]}-{x[4:6]}-{x[6:8]}" if len(x) == 8 and x.isdigit() else x
+
+
 def load_kiwoom(path=os.path.join(BASE, "trade_state_kiwoom")):
-    """키움 퀀트 자동매매 → 공통 형식.
-    ※ trade_state_kiwoom/ 의 파일 형식을 확인한 뒤 채울 자리.
-      거래 로그가 있으면 체결 시각·수량·단가를 그대로 옮기고,
-      positions.json 은 보유 목록으로 옮긴다. 폴더가 없으면 빈 값."""
+    """키움 퀀트 v41f 자동매매 → 공통 형식
+      · kiwoom_positions.json  {"positions": {코드: {...}}, "updated_at": "..."}  → 보유
+      · *pending*.json         {"date": "YYYYMMDD", "candidates": {코드: {status, tries, first_seen,
+                                 last_check, last_detail}}}                       → 매수 후보·게이트 상태
+      · 체결 로그(*trade*/*fill*/*order*.json 리스트)가 있으면 매수·매도 내역으로 옮김
+    """
+    import glob
     if not os.path.isdir(path):
         return [], [], []
+    S, M = "퀀트 v41f", "키움"
     trades, poss, runs = [], [], []
-    pp = os.path.join(path, "positions.json")
+    updated = None
+    pp = os.path.join(path, "kiwoom_positions.json")
+    if not os.path.exists(pp):
+        pp = os.path.join(path, "positions.json")
     if os.path.exists(pp):
+        J = json.load(open(pp, encoding="utf-8"))
+        updated = J.get("updated_at") if isinstance(J, dict) else None
+        P = J.get("positions", J) if isinstance(J, dict) else {}
+        for code, p in (P.items() if isinstance(P, dict) else []):
+            if not isinstance(p, dict):
+                continue
+            qty = int(float(_pick(p, "qty", "quantity", "hldg_qty", "holding_qty", default=0)))
+            avg = float(_pick(p, "avg_price", "avg", "buy_price", "pchs_avg_pric", "price", default=0))
+            poss.append({"strategy": S, "mode": M, "code": code, "name": _pick(p, "name", "stock_name", default=code),
+                         "qty": qty, "avg": avg, "now": _pick(p, "now", "cur_price", "current_price", "prpr"),
+                         "buy_time": _pick(p, "buy_time", "buy_date", "entry_date"),
+                         "stop": _pick(p, "stop", "stop_price"), "target": _pick(p, "target", "target_price"),
+                         "days": _pick(p, "days", "hold_days")})
+    # 매수 후보 · 게이트 상태 (가장 최근 pending 파일)
+    pend = sorted(glob.glob(os.path.join(path, "*pending*.json")))
+    errors = []
+    if pend:
+        J = json.load(open(pend[-1], encoding="utf-8"))
+        day = _ymd(J.get("date", ""))
+        held = {p["code"] for p in poss}
+        last_check = None
+        for code, c in (J.get("candidates") or {}).items():
+            det = c.get("last_detail") or {}
+            err = det.get("error") if isinstance(det, dict) else None
+            if err:
+                errors.append(f"{code} {err}")
+            last_check = max(last_check or "", c.get("last_check") or "")
+            if code in held:
+                continue
+            msg = err or (", ".join(f"{k} {v}" for k, v in det.items()) if isinstance(det, dict) else str(det))
+            poss.append({"strategy": S, "mode": M, "code": code, "name": c.get("name", code), "qty": 0, "avg": None,
+                         "now": None, "buy_time": None, "stop": None, "target": None, "days": None, "pending": True,
+                         "note": f"매수 후보 · 게이트 {c.get('status', '-')} · {c.get('tries', 0)}회 확인 · "
+                                 f"최근 {c.get('last_check', '-')} · {msg or '대기'}"})
+        runs.append({"strategy": S, "run_at": f"{day} {last_check or ''}".strip(), "data_date": day,
+                     "ok": not errors,
+                     "detail": (" / ".join(errors) if errors else
+                                f"후보 {len(J.get('candidates') or {})}종목 확인 · 보유 {len([p for p in poss if not p.get('pending')])}종목")})
+    elif updated:
+        runs.append({"strategy": S, "run_at": updated[:16], "data_date": updated[:10], "ok": True,
+                     "detail": f"보유 {len(poss)}종목 동기화"})
+    # 체결 로그 (있을 때만)
+    for f in sorted(glob.glob(os.path.join(path, "*trade*.json")) + glob.glob(os.path.join(path, "*fill*.json"))
+                    + glob.glob(os.path.join(path, "*order*.json"))):
         try:
-            P = json.load(open(pp, encoding="utf-8"))
-            for code, p in (P.items() if isinstance(P, dict) else []):
-                poss.append({"strategy": "퀀트 v41f", "mode": "키움", "code": code, "name": p.get("name", code),
-                             "qty": int(p.get("qty", 0)), "avg": float(p.get("avg_price", 0)),
-                             "now": p.get("now"), "buy_time": p.get("buy_date"), "stop": None,
-                             "target": None, "days": None})
+            J = json.load(open(f, encoding="utf-8"))
         except Exception:  # noqa
-            pass
+            continue
+        rows = J if isinstance(J, list) else (J.get("trades") or J.get("fills") or J.get("orders") or [])
+        for t in rows if isinstance(rows, list) else []:
+            side = str(_pick(t, "side", "type", "action", default=""))
+            side = "매수" if side.lower() in ("buy", "b", "매수", "2") else ("매도" if side.lower() in ("sell", "s", "매도", "1") else side)
+            qty = int(float(_pick(t, "qty", "quantity", "filled_qty", default=0)))
+            px = float(_pick(t, "price", "filled_price", "avg_price", default=0))
+            trades.append({"time": str(_pick(t, "time", "datetime", "filled_at", "date", default="")), "strategy": S,
+                           "mode": f"{M} {t.get('mode', '')}".strip(), "code": str(_pick(t, "code", "stock_code", default="")),
+                           "name": _pick(t, "name", "stock_name", default=""), "side": side, "qty": qty, "price": px,
+                           "amount": round(qty * px), "fee": _pick(t, "fee", "commission", default=None),
+                           "reason": _pick(t, "reason", "note", default=""), "pnl": _pick(t, "pnl", "profit"),
+                           "ret": _pick(t, "ret", "return")})
     return trades, poss, runs
 
 
-SOURCES = [("박스 눌림매수", load_box_paper), ("퀀트 v41f (키움)", load_kiwoom)]
+SOURCES = [("퀀트 v41f (키움)", load_kiwoom), ("박스 눌림매수", load_box_paper)]
+# 전략 색은 이 순서로 고정 (파랑 → 주황 → 초록 → 노랑). 새 전략은 끝에 추가 — 기존 전략 색이 바뀌지 않게
+STRATEGY_ORDER = ["퀀트 v41f", "박스 눌림매수"]
 
 
 # ═════════════════════════════════════════ 화면
@@ -98,7 +170,7 @@ def build(out=OUT):
         except Exception as e:  # noqa
             R.append({"strategy": _, "run_at": datetime.now().strftime("%Y-%m-%d %H:%M"), "data_date": "-",
                       "ok": False, "detail": f"데이터 읽기 실패: {e}"})
-    data = json.dumps({"trades": T, "positions": P, "runs": R,
+    data = json.dumps({"trades": T, "positions": P, "runs": R, "order": STRATEGY_ORDER,
                        "generated": datetime.now().strftime("%Y-%m-%d %H:%M")}, ensure_ascii=False)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
@@ -172,8 +244,8 @@ const D=/*DATA*/null;
 const $=s=>document.querySelector(s), W=n=>(n==null?'–':Math.round(n).toLocaleString('ko-KR')), Wsg=n=>(n==null?'–':(n>0?'+':'')+Math.round(n).toLocaleString('ko-KR'));
 const P=r=>r==null?'–':(r>0?'+':'')+(r*100).toFixed(1)+'%';
 const SG=r=>r==null?'–':`<span class="sg ${r>0?'p':r<0?'m':''}"><i></i>${P(r)}</span>`;
-const strategies=[...new Set([...D.trades,...D.positions,...D.runs].map(x=>x.strategy))];
-const COL=Object.fromEntries(strategies.map((s,i)=>[s,`var(--s${i%4+1})`]));   // 전략 색 = 등장 순서 고정
+const seen=new Set([...D.trades,...D.positions,...D.runs].map(x=>x.strategy));const strategies=[...(D.order||[]).filter(s=>seen.has(s)),...[...seen].filter(s=>!(D.order||[]).includes(s))];
+const ALL=[...(D.order||[]),...strategies.filter(s=>!(D.order||[]).includes(s))];const COL=Object.fromEntries(ALL.map((s,i)=>[s,`var(--s${i%4+1})`]));   // 전략 색 = 등장 순서 고정
 strategies.forEach(s=>$('#fs').insertAdjacentHTML('beforeend',`<option>${s}</option>`));
 $('#gen').textContent=`생성 ${D.generated} · 전략 ${strategies.length}개`;
 let days=30, sortT={k:'time',d:-1};
@@ -197,7 +269,7 @@ function render(){
  // 전략 카드
  $('#strats').innerHTML=strategies.filter(s=>!$('#fs').value||s===$('#fs').value).map(s=>{
   const st=D.trades.filter(t=>t.strategy===s&&t.side==='매도'), sp=D.positions.filter(p=>p.strategy===s&&!p.pending);
-  const r=D.runs.filter(x=>x.strategy===s).slice(-1)[0], mode=[...new Set(sp.map(p=>p.mode).concat(D.trades.filter(t=>t.strategy===s).map(t=>t.mode)))][0]||'';
+  const r=D.runs.filter(x=>x.strategy===s).slice(-1)[0], mode=[...new Set(D.positions.filter(p=>p.strategy===s).map(p=>p.mode).concat(D.trades.filter(t=>t.strategy===s).map(t=>t.mode)))][0]||'';
   const pnl=st.reduce((a,t)=>a+(t.pnl||0),0), w=st.filter(t=>t.pnl>0).length, avg=st.length?st.reduce((a,t)=>a+(t.ret||0),0)/st.length:null;
   const ev=sp.reduce((a,p)=>a+p.qty*((p.now??p.avg)-p.avg),0);
   const h=r?(r.ok?`<span class="pill ok"><i></i>정상</span>`:`<span class="pill ng"><i></i>점검</span>`):`<span class="pill na"><i></i>기록없음</span>`;
