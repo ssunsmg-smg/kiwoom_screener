@@ -89,5 +89,18 @@
   "n_exits": 0,
   "positions": 2,
   "orders": 1
+ },
+ {
+  "run_at": "2026-11-21 09:14",
+  "run_date": "2026-11-21",
+  "data_date": "2026-11-20",
+  "n_prices": 495,
+  "n_breakouts": 7,
+  "ok": true,
+  "n_new": 0,
+  "n_fills": 0,
+  "n_exits": 0,
+  "positions": 2,
+  "orders": 1
  }
 ]
