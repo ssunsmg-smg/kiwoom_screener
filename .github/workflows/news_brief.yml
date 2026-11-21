@@ -1,0 +1,72 @@
+name: 장전 브리핑 (수출 발표 + DART 공시 + 급증 후보)
+
+# 평일 08:21 KST (= 전날 23:21 UTC, 일~목) — 장 시작 40분 전
+#  · 1/11/21일 전후: 수출 발표 뉴스 수치 + 관련 업종
+#  · 매일: 전날 이후 DART 주요 공시 (호재성/악재성), 급증 후보와 겹치면 ★
+#  · 전날 저녁 뽑은 거래량 급증 후보 다시 알림
+on:
+  schedule:
+    - cron: '21 23 * * 0-4'
+  workflow_dispatch:
+    inputs:
+      force_exports:
+        description: '수출 뉴스 날짜 상관없이 조회 (테스트용 true)'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kiwoom-trading-state
+  cancel-in-progress: false
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: 패키지 설치
+        run: |
+          pip install --upgrade pip
+          pip install requests pandas numpy
+
+      - name: 텔레그램 설정
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+            jq -n --arg t "$TELEGRAM_BOT_TOKEN" --arg c "$TELEGRAM_CHAT_ID" '{bot_token:$t, chat_id:$c}' > telegram_config.json
+          fi
+
+      - name: 장전 브리핑
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+        run: |
+          FLAG=""
+          [ "${{ github.event.inputs.force_exports }}" = "true" ] && FLAG="--force-exports"
+          python news_watch.py $FLAG
+
+      - name: 설정파일 삭제
+        if: always()
+        run: rm -f telegram_config.json
+
+      - name: 기록 커밋 (수출 수치 누적 · 중복 방지 목록)
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add news/ 2>/dev/null || true
+          if git diff --staged --quiet; then exit 0; fi
+          git commit -m "장전 브리핑 기록 $(TZ=Asia/Seoul date '+%Y-%m-%d')"
+          for i in 1 2 3; do
+            git push origin "HEAD:${GITHUB_REF_NAME}" && break
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            sleep 5
+          done
