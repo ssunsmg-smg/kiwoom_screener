@@ -85,7 +85,13 @@ def load_kiwoom(path=os.path.join(BASE, "trade_state_kiwoom")):
     import glob
     if not os.path.isdir(path):
         return [], [], []
-    S, M = "퀀트 v41f", "키움"
+    ust = {}
+    if os.path.exists(os.path.join(path, "unified_state.json")):
+        ust = json.load(open(os.path.join(path, "unified_state.json"), encoding="utf-8")).get("positions", {})
+        S = "통합전략 v1"
+    else:
+        S = "퀀트 v41f"
+    M = "키움"
     trades, poss, runs = [], [], []
     updated = None
     pp = os.path.join(path, "kiwoom_positions.json")
@@ -103,7 +109,9 @@ def load_kiwoom(path=os.path.join(BASE, "trade_state_kiwoom")):
             poss.append({"strategy": S, "mode": M, "code": code, "name": _pick(p, "name", "stock_name", default=code),
                          "qty": qty, "avg": avg, "now": _pick(p, "now", "cur_price", "current_price", "prpr"),
                          "buy_time": _pick(p, "buy_time", "buy_date", "entry_date"),
-                         "stop": _pick(p, "stop", "stop_price"), "target": _pick(p, "target", "target_price"),
+                         "stop": _pick(p, "stop", "stop_price", default=ust.get(code, {}).get("stop")),
+                         "target": _pick(p, "target", "target_price",
+                                         default=round(float(ust[code]["entry"]) * 1.07) if code in ust else None),
                          "days": _pick(p, "days", "hold_days")})
     # 매수 후보 · 게이트 상태 (가장 최근 pending 파일)
     pend = sorted(glob.glob(os.path.join(path, "*pending*.json")))
@@ -157,11 +165,11 @@ def load_kiwoom(path=os.path.join(BASE, "trade_state_kiwoom")):
 
 SOURCES = [("퀀트 v41f (키움)", load_kiwoom), ("박스 눌림매수", load_box_paper)]
 # 전략 색은 이 순서로 고정 (파랑 → 주황 → 초록 → 노랑). 새 전략은 끝에 추가 — 기존 전략 색이 바뀌지 않게
-STRATEGY_ORDER = ["퀀트 v41f", "박스 눌림매수"]
+STRATEGY_ORDER = ["통합전략 v1", "퀀트 v41f", "박스 눌림매수"]
 
 
-# ═════════════════════════════════════════ 화면
-def build(out=OUT):
+# ═════════════════════════════════════════ 수집
+def collect():
     T, P, R = [], [], []
     for _, fn in SOURCES:
         try:
@@ -170,6 +178,33 @@ def build(out=OUT):
         except Exception as e:  # noqa
             R.append({"strategy": _, "run_at": datetime.now().strftime("%Y-%m-%d %H:%M"), "data_date": "-",
                       "ok": False, "detail": f"데이터 읽기 실패: {e}"})
+    return T, P, R
+
+
+def today_text(day: str) -> str:
+    """텔레그램용 '오늘 매매' 요약 (전략 전체). day = 'YYYY-MM-DD'"""
+    T, P, R = collect()
+    lines = [f"🧾 오늘 매매 ({day})"]
+    for s in STRATEGY_ORDER + sorted({t["strategy"] for t in T} - set(STRATEGY_ORDER)):
+        tt = [t for t in T if t["strategy"] == s and str(t["time"]).startswith(day)]
+        held = [p for p in P if p["strategy"] == s and not p.get("pending")]
+        bad = [r for r in R if r["strategy"] == s and not r["ok"] and str(r.get("data_date", "")).startswith(day)]
+        head = f"\n[{s}] 매수 {sum(t['side'] == '매수' for t in tt)} · 매도 {sum(t['side'] == '매도' for t in tt)} · 보유 {len(held)}"
+        lines.append(head)
+        for t in sorted(tt, key=lambda x: str(x["time"])):
+            pn = f" → {t['pnl']:+,}원" if t.get("pnl") is not None else ""
+            lines.append(f" {'📈' if t['side'] == '매수' else '📉'} {str(t['time'])[11:16] or ''} {t['name']} "
+                         f"{t['qty']:,}주 × {t['price']:,.0f} = {t['amount']:,}원{pn}")
+        if not tt:
+            lines.append(" 오늘 체결 없음")
+        for r in bad:
+            lines.append(f" ⚠ {r['detail']}")
+    return "\n".join(lines)
+
+
+# ═════════════════════════════════════════ 화면
+def build(out=OUT):
+    T, P, R = collect()
     data = json.dumps({"trades": T, "positions": P, "runs": R, "order": STRATEGY_ORDER,
                        "generated": datetime.now().strftime("%Y-%m-%d %H:%M")}, ensure_ascii=False)
     os.makedirs(os.path.dirname(out), exist_ok=True)

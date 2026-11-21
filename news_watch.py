@@ -162,6 +162,60 @@ def export_section(force=False):
     return lines
 
 
+# ───────────────────────────── ⓪ 글로벌 시장 (밤사이 미국 마감)
+GLOBAL = [  # (표시명, yfinance 티커, 단위)
+    ("S&P500", "^GSPC", "%"), ("나스닥", "^IXIC", "%"), ("필라델피아 반도체(SOX)", "^SOX", "%"),
+    ("엔비디아", "NVDA", "%"), ("마이크론", "MU", "%"), ("브로드컴", "AVGO", "%"), ("TSMC ADR", "TSM", "%"),
+    ("원/달러", "KRW=X", "원"), ("미 10년물", "^TNX", "bp"), ("WTI 유가", "CL=F", "%"),
+    ("금", "GC=F", "%"), ("VIX(공포지수)", "^VIX", "pt"),
+]
+
+
+def global_section():
+    import yfinance as yf
+    tick = [t for _, t, _ in GLOBAL]
+    d = yf.download(tick, period="7d", interval="1d", progress=False, auto_adjust=False, threads=True)
+    close = d["Close"] if "Close" in d else d
+    lines = ["🌎 밤사이 글로벌"]
+    semi_move = []
+    for name, t, unit in GLOBAL:
+        s = close[t].dropna() if t in close else None
+        if s is None or len(s) < 2:
+            continue
+        a, b = float(s.iloc[-2]), float(s.iloc[-1])
+        if unit == "원":
+            txt = f"{b:,.1f}원 ({b - a:+.1f})"
+        elif unit == "bp":
+            txt = f"{b:.2f}% ({(b - a) * 100:+.0f}bp)"
+        elif unit == "pt":
+            txt = f"{b:.1f} ({b - a:+.1f})"
+        else:
+            ch = (b / a - 1) * 100
+            txt = f"{ch:+.2f}%"
+            if t in ("^SOX", "NVDA", "MU", "AVGO", "TSM"):
+                semi_move.append(ch)
+        lines.append(f" {name}: {txt}  ({s.index[-1]:%m-%d})")
+    if semi_move:
+        m = sum(semi_move) / len(semi_move)
+        if abs(m) >= 2:
+            lines.append(f" → 미국 반도체 평균 {m:+.1f}% — 오늘 국내 반도체·장비주 시초가에 영향 클 가능성")
+    try:
+        raw = google_news("뉴욕증시 마감", hours=14)[:4] + google_news("연준 OR 관세 OR 트럼프 증시", hours=14)[:4]
+        heads, seen_t = [], set()
+        for h in raw:
+            k = h["title"][:25]
+            if k not in seen_t:
+                seen_t.add(k)
+                heads.append(h)
+        heads = heads[:5]
+        if heads:
+            lines.append(" 주요 뉴스:")
+            lines += [f"  • {h['title'][:70]}" for h in heads]
+    except Exception as e:  # noqa
+        print(f"  ⚠ 글로벌 뉴스 실패: {e}")
+    return lines
+
+
 # ───────────────────────────── ② DART 공시
 def dart_list(key, bgn, end):
     out, page = [], 1
@@ -189,6 +243,10 @@ def dart_section(key, watch=set()):
     seen = load_json(os.path.join(NEWS_DIR, "dart_seen.json"), {"rcept": []})
     done = set(seen["rcept"])
     good, bad = [], []
+    # 종목별 호재/악재 표시 → 통합전략 감시목록이 사용 (최근 3일 유지)
+    fpath = os.path.join(NEWS_DIR, "dart_flags.json")
+    keep = (t - timedelta(days=3)).strftime("%Y-%m-%d")
+    flags = {c: v for c, v in load_json(fpath, {}).get("flags", {}).items() if v.get("date", "") >= keep}
     for x in rows:
         if not x.get("stock_code") or x["rcept_no"] in done:
             continue
@@ -196,10 +254,12 @@ def dart_section(key, watch=set()):
         tag = "good" if any(k in nm for k in DART_GOOD) else ("bad" if any(k in nm for k in DART_BAD) else None)
         if not tag or "기재정정" in nm and tag == "good":
             continue
+        flags.setdefault(x["stock_code"], {"good": [], "bad": [], "date": t.strftime("%Y-%m-%d")})[tag].append(nm.strip()[:40])
         star = "★" if x["stock_code"] in watch else ""
         line = f" {star}{x['corp_name']}({x['stock_code']}) {nm.strip()[:40]}"
         (good if tag == "good" else bad).append((star != "", line))
         done.add(x["rcept_no"])
+    save_json(fpath, {"updated": t.strftime("%Y-%m-%d %H:%M"), "flags": flags})
     seen["rcept"] = list(done)[-5000:]
     save_json(os.path.join(NEWS_DIR, "dart_seen.json"), seen)
     lines = [f"🏛 DART 주요 공시 ({since:%m-%d} 이후, 호재성 {len(good)} · 악재성 {len(bad)})"]
@@ -231,7 +291,7 @@ def main():
     a = ap.parse_args()
     watch, surge_lines = surge_watch()
     parts = [f"📰 장전 브리핑 {now():%m-%d}({'월화수목금토일'[now().weekday()]}) {now():%H:%M}"]
-    for fn in (lambda: export_section(a.force_exports), lambda: dart_section(os.environ.get("DART_API_KEY", "").strip(), watch)):
+    for fn in (global_section, lambda: export_section(a.force_exports), lambda: dart_section(os.environ.get("DART_API_KEY", "").strip(), watch)):
         try:
             sec = fn()
             if sec:
