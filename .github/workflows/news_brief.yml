@@ -1,4 +1,4 @@
-name: 장전 브리핑 (수출 발표 + DART 공시 + 급증 후보)
+name: 장전 브리핑 (글로벌 + 수출 발표 + DART 공시 + 급증 후보)
 
 # 평일 08:21 KST (= 전날 23:21 UTC, 일~목) — 장 시작 40분 전
 #  · 1/11/21일 전후: 수출 발표 뉴스 수치 + 관련 업종
@@ -34,7 +34,7 @@ jobs:
       - name: 패키지 설치
         run: |
           pip install --upgrade pip
-          pip install requests pandas numpy
+          pip install requests pandas numpy yfinance
 
       - name: 텔레그램 설정
         env:
