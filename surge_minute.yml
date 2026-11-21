@@ -1,0 +1,106 @@
+name: 거래량 급증 후보 + 5분봉 수집 (장 마감 후, 주문 없음)
+
+# 매일 장 마감 후
+#  ① minute_collector.py   : 어제 저녁 후보 종목의 '오늘 5분봉'을 키움에서 받아 data/minute5/ 에 저장
+#  ② surge_candidates.py   : 내일 거래량 급증 후보 상위 10 → surge/ 저장 + 텔레그램
+#  ③ (수동 실행 시) 과거 채우기: 지난 N 거래일 후보의 다음날 5분봉을 한 번에 수집
+#  5분봉이 충분히 쌓이면 pullback5_backtest.py 로 눌림목 규칙을 검증한다.
+#  16:53 KST = 07:53 UTC (박스 가상장부 16:41 다음, 정각 혼잡 회피)
+
+on:
+  schedule:
+    - cron: '53 7 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: '과거 채우기 — 지난 N 거래일 (0=안 함, 처음 한 번은 120 권장)'
+        required: false
+        default: '0'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kiwoom-trading-state
+  cancel-in-progress: false
+
+jobs:
+  surge-minute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 패키지 설치
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 키움 설정파일 생성 (조회 전용 — 이 워크플로는 주문하지 않음)
+        env:
+          KIWOOM_APP_KEY:    ${{ secrets.KIWOOM_APP_KEY }}
+          KIWOOM_APP_SECRET: ${{ secrets.KIWOOM_APP_SECRET }}
+          KIWOOM_IS_REAL:    ${{ secrets.KIWOOM_IS_REAL }}
+        run: |
+          RAW=$(printf '%s' "${KIWOOM_IS_REAL:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+          case "$RAW" in true|1|yes|y) IS_REAL=true ;; *) IS_REAL=false ;; esac
+          jq -n --arg k "$KIWOOM_APP_KEY" --arg s "$KIWOOM_APP_SECRET" --argjson r "$IS_REAL" \
+            '{app_key:$k, app_secret:$s, is_real:$r, max_daily_trades:0}' > kiwoom_config.json
+          echo "▶ 키움 설정 생성 (is_real=$IS_REAL)"
+
+      - name: 텔레그램 설정
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+            jq -n --arg t "$TELEGRAM_BOT_TOKEN" --arg c "$TELEGRAM_CHAT_ID" '{bot_token:$t, chat_id:$c}' > telegram_config.json
+          fi
+
+      - name: ① 오늘 5분봉 수집 (어제 후보)
+        run: python minute_collector.py
+
+      - name: ② 내일 거래량 급증 후보
+        run: python surge_candidates.py --top 500 --n 10
+
+      - name: ③ 과거 5분봉 채우기 (수동 실행 때만)
+        if: github.event.inputs.backfill != '' && github.event.inputs.backfill != '0'
+        run: python minute_collector.py --backfill "${{ github.event.inputs.backfill }}"
+
+      - name: ④ 눌림목 백테스트 (쌓인 5분봉으로)
+        if: always()
+        run: python pullback5_backtest.py || true
+
+      - name: 실패 알림
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          [ -z "${TELEGRAM_BOT_TOKEN:-}" ] && exit 0
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=⚠️ 급증후보/5분봉 수집 실패 $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M') — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" > /dev/null
+
+      - name: 설정파일 삭제
+        if: always()
+        run: rm -f kiwoom_config.json telegram_config.json
+
+      - name: 데이터 커밋
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add surge/ data/minute5/ 2>/dev/null || true
+          if git diff --staged --quiet; then echo "▶ 변경 없음"; exit 0; fi
+          git commit -m "급증후보·5분봉 $(TZ=Asia/Seoul date '+%Y-%m-%d')"
+          for i in 1 2 3; do
+            git push origin "HEAD:${GITHUB_REF_NAME}" && break
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            sleep 5
+          done
